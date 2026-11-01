@@ -125,7 +125,7 @@ else t "no app icon ($ICON not found): the home-screen icon stays blank"; fi
 if [ "$PREPARE_XCODE" = YES ] && [ -n "${DM_ENTITLEMENTS-default}" ]; then
   if [ -n "${DM_ENTITLEMENTS:-}" ]; then cp "$DM_ENTITLEMENTS" Gen/DmIOS.entitlements || die "copy DM_ENTITLEMENTS"
   else printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
-    '<plist version="1.0"><dict><key>com.apple.developer.kernel.increased-memory-limit</key><true/></dict></plist>' > Gen/DmIOS.entitlements || die "entitlements"; fi
+    '<plist version="1.0"><dict><key>com.apple.developer.kernel.increased-memory-limit</key><true/><key>com.apple.developer.kernel.extended-virtual-addressing</key><true/></dict></plist>' > Gen/DmIOS.entitlements || die "entitlements"; fi
   echo "CODE_SIGN_ENTITLEMENTS = Gen/DmIOS.entitlements" >> Gen/dm.xcconfig
   t "entitlements: $(plutil -convert json -o - Gen/DmIOS.entitlements)"
 fi
@@ -162,6 +162,9 @@ APP=$DD/Build/Products/Release-iphoneos/DmIOS.app
 # the app sets DM_AOC_DIR at launch, the host reports them as owned and mounts them from it) and the RomFS
 rm -rf "$APP/msl" "$O/Payload"   # Payload/: what the copy-and-zip packing left behind, as was out.ipa (and its index) unless it is the IPA packed here, which a repeat pack reuses
 [ "$O/out.ipa" -ef "$OUT_IPA" ] || rm -f "$O/out.ipa"; [ "$O/out.ipa.idx" -ef "$OUT_IPA.idx" ] || rm -f "$O/out.ipa.idx"
+# Extended Virtual Addressing (XNU jumbo mode, iOS 14+): without it iOS caps one reservation to about 5-6 GB whatever the device's RAM, which is the wall a virtual-address-memory game hits when its alias region
+# is full (Fire Emblem Engage: the alias region filled at 4.26 GB of 4.375 GB while the device had 12 GB of RAM). It raises the cap on the reservation only: the profile's mem_reserve / mem_alias still decide
+# how big the guest block is, so a game needs both this entitlement and a bigger block to use the device's address space. Xcode's automatic signing adds the capability to the App ID as it did for Increased Memory Limit.
 # The entitlements of an unsigned IPA: an unsigned build has no signature for a sideloader to read them from, so the Increased Memory Limit request would be lost (AltStore and others carry over
 # the entitlements of the signature they replace; the Xcode project gets them through CODE_SIGN_ENTITLEMENTS, above). The executable gets an ad-hoc signature that carries them: the sideloader
 # replaces the signature and keeps the entitlements. Only the executable is signed: the bundle's resources are packed from elsewhere and the signature is replaced anyway
@@ -169,7 +172,7 @@ if [ -n "${DM_ENTITLEMENTS-default}" ]; then
   ENT=$O/DmIOS.entitlements
   if [ -n "${DM_ENTITLEMENTS:-}" ]; then cp "$DM_ENTITLEMENTS" "$ENT" || die "copy DM_ENTITLEMENTS"
   else printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
-    '<plist version="1.0"><dict><key>com.apple.developer.kernel.increased-memory-limit</key><true/></dict></plist>' > "$ENT" || die "entitlements"; fi
+    '<plist version="1.0"><dict><key>com.apple.developer.kernel.increased-memory-limit</key><true/><key>com.apple.developer.kernel.extended-virtual-addressing</key><true/></dict></plist>' > "$ENT" || die "entitlements"; fi
   EXE=$APP/DmIOS; [ ! -f "$APP/Info.plist" ] || EXE=$APP/$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$APP/Info.plist") || die "CFBundleExecutable of $APP"
   xattr -cr "$EXE" 2> /dev/null   # codesign refuses a file with a resource fork, Finder information or quarantine attributes
   codesign --force --sign - --entitlements "$ENT" "$EXE" || die "ad-hoc signature with the entitlements"
