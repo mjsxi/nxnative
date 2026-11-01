@@ -11139,13 +11139,27 @@ int mtl_display_hz(void) {
 static _Atomic uint64_t g_present_stall_ns;   // For unit tests: an extra pause before each present on the present thread (simulating a drawable that stays unavailable)
 static CAMetalLayer *g_present_layer_resident;
 void mtl_present_test_stall(uint64_t ns) { g_present_stall_ns = ns; }
+// DM_PRESENT_AA: the present pass can filter the finished picture. Off by default, so the picture is the game's own bytes through
+// fs as always; with fxaa the same draw uses fs_fxaa (dm/gfx/msl/present.metal), which leaves everything outside a luminance edge
+// exactly as it is. Read once, like fx_mode; the pipeline is chosen per drawable format, so a TV's format keeps its own pair.
+static int g_present_aa = -1;
+static int present_aa(void) {
+    if (g_present_aa >= 0) return g_present_aa;
+    const char *e = getenv("DM_PRESENT_AA"); int v = 0;
+    if (e && (!strcmp(e, "fxaa") || !strcmp(e, "1"))) v = 1;
+    else if (e && (!strcmp(e, "off") || !strcmp(e, "0"))) v = 0;
+    else if (e && *e) MLOG("[RED] DM_PRESENT_AA=%s: fxaa or off; keeping off", e);
+    MLOG("present antialiasing (DM_PRESENT_AA): %s", v ? "fxaa, the present pass filters the game's picture (a post filter: it softens what it smooths, and cannot add detail the game did not render)" : "off, the present pass draws the game's picture as it is");
+    return g_present_aa = v;
+}
 static void present_pipeline(MTLPixelFormat format) {
     if (!g_blit_pso || g_blit_fmt != format) {
         NSError *e = nil;
         id<MTLLibrary> lib = host_lib("present", &e);
         if (!lib) MDIE("present shader compile failed %s", e.localizedDescription.UTF8String);
         MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
-        pd.vertexFunction = [lib newFunctionWithName:@"vs"]; pd.fragmentFunction = [lib newFunctionWithName:@"fs"];
+        int aa = present_aa();   // the one place the two functions differ; the flag is read once, so the slot is never rebuilt by it
+        pd.vertexFunction = [lib newFunctionWithName:@"vs"]; pd.fragmentFunction = [lib newFunctionWithName:(aa ? @"fs_fxaa" : @"fs")];
         pd.colorAttachments[0].pixelFormat = format;
         g_blit_pso = [g_dev newRenderPipelineStateWithDescriptor:pd error:&e];
         if (!g_blit_pso) MDIE("present pipeline failed %s", e.localizedDescription.UTF8String);
