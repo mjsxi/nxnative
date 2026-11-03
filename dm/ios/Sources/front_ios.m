@@ -16,6 +16,9 @@
 UIView *dm_gamepad_view(CGRect frame);
 void dm_gamepad_reset(void);
 void dm_gamepad_active(void);
+int dm_gamepad_layout(void);        // the menu marks the current layout: 0 = 2D, 1 = 3D, 2 = Touch-only
+int dm_gamepad_tap_available(void); // the Touch-only layout only while the game is in handheld mode
+void dm_gamepad_set_layout(int l);
 void front_ios_boot(void);
 int front_ios_boot_ok(void);
 const char *front_ios_boot_message(void);   // main.m: why a build that keeps the game files off the IPA found none usable (NULL = the generic hint)
@@ -333,6 +336,46 @@ static void save_sync_background(void) {
         if (!save_sync_flush(20000)) LOG("front end: the save did not reach the cloud before the app was suspended; it goes after the next save or at the next start");
         dispatch_async(dispatch_get_main_queue(), end);
     });
+}
+
+// The menu behind the controls' menu button (DmGamepad.m): the button layouts, the cheats slot that has no iOS list yet, and quitting the game.
+// The game keeps running while it is open, as the Mac window's menus do. Quit Game goes the way backgrounding goes: what the game committed goes out
+// under a background task, then dm_host_shutdown wraps the host up (audio paused, GPU drained, a clean exit, so the cheat engine does not arm safe mode
+// for the next launch). The host has no stop-and-restart path, so this ends the process: opening the app again shows its launcher, the Play screen.
+void dm_pad_menu_show(UIView *view, CGPoint at) {
+    UIViewController *vc = g_root; if (!vc) return;
+    int now = dm_gamepad_layout();
+    UIAlertController *m = [UIAlertController alertControllerWithTitle:nil message:nil preferredStyle:UIAlertControllerStyleActionSheet];
+    NSString *names[3] = { @"2D Button Layout", @"3D Button Layout", @"Touch-only Layout" };
+    for (int l = 0; l < 3; l++) {
+        if (l == 2 && !dm_gamepad_tap_available()) continue;
+        NSString *t = l == now ? [names[l] stringByAppendingString:@"  \u2713"] : names[l];
+        [m addAction:[UIAlertAction actionWithTitle:t style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) { dm_gamepad_set_layout(l); }]];
+    }
+    UIAlertAction *ch = [UIAlertAction actionWithTitle:@"Cheats (coming soon)" style:UIAlertActionStyleDefault handler:nil];
+    ch.enabled = NO;   // the row shows where the iOS cheat list will sit: hle_cheats.c already carries the engine, the iPhone has no menu for it
+    [m addAction:ch];
+    [m addAction:[UIAlertAction actionWithTitle:@"Quit Game" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *a) {
+        NSString *game = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleDisplayName"] ?: @"the game";
+        UIAlertController *q = [UIAlertController alertControllerWithTitle:[NSString stringWithFormat:@"Quit %@?", game]
+                       message:@"The app quits, and opening it again brings back the Play screen. Progress the game has not saved is lost." preferredStyle:UIAlertControllerStyleAlert];
+        [q addAction:[UIAlertAction actionWithTitle:@"Keep playing" style:UIAlertActionStyleCancel handler:nil]];
+        [q addAction:[UIAlertAction actionWithTitle:@"Quit" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *b) {
+            UIApplication *app = UIApplication.sharedApplication;
+            __block UIBackgroundTaskIdentifier task = UIBackgroundTaskInvalid;
+            void (^end)(void) = ^{ if (task != UIBackgroundTaskInvalid) { [app endBackgroundTask:task]; task = UIBackgroundTaskInvalid; } };   // on the main queue
+            task = [app beginBackgroundTaskWithName:@"quit game" expirationHandler:end];
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+                if (!save_sync_flush(20000)) LOG("quit game: the save did not reach the cloud in time; it goes after the next save or at the next start");
+                dispatch_async(dispatch_get_main_queue(), ^{ end(); dm_host_shutdown("menu"); });
+            });
+        }]];
+        [vc presentViewController:q animated:YES completion:nil];
+    }]];
+    [m addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    UIPopoverPresentationController *pp = m.popoverPresentationController;
+    if (pp) { pp.sourceView = view; pp.sourceRect = CGRectMake(at.x - 25, at.y - 14, 50, 28); }   // an iPad shows it from the button, an iPhone as a sheet
+    [vc presentViewController:m animated:YES completion:nil];
 }
 
 void front_ios_focus_event(int ev) {

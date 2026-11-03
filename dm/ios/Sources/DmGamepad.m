@@ -1,7 +1,7 @@
 // Virtual gamepad (Nintendo button positions) + physical controllers (GameController), handed to the host through dm_input_set and dm_pad_set_player (hle_hid.c, bit layout in dm_input.h).
-//   Two layouts, three in handheld mode; one tap on the layout button at the top centre (labelled with the current layout, "2D" / "3D" / "Tap") goes to the next, and the choice is kept in NSUserDefaults (each game is its own app, so per game); the first launch uses the game profile's pad_layout (DM_GAME_PAD_LAYOUT).
-//   Tap (touch): no control but the layout button, every other touch goes to the game's touch screen; offered only while the game is in handheld mode, the only one in which it reads the touch screen (Balatro, played by touch).
-//   2D (simple): top corners ZL above L (one column), ZR above R likewise, teardrops with the tip toward the screen corner; − and + side by side at the top centre; the left stick in the bottom-left corner and not drawn: a touch in the left third of the screen holds it, centred where it lands, and only its knob shows under the finger (tilt measured from that centre, small dead zone);
+//   Two layouts, three in handheld mode; a tap on the menu button at the top centre (labelled with the current layout, "2D" / "3D" / "Tap") opens the game's menu, where the layout is picked and the game can be quit (front_ios.m, dm_pad_menu_show); the choice is kept in NSUserDefaults (each game is its own app, so per game); the first launch uses the game profile's pad_layout (DM_GAME_PAD_LAYOUT).
+//   Tap (touch): no control but the menu button, every other touch goes to the game's touch screen; the menu offers it only while the game is in handheld mode, the only one in which it reads the touch screen (Balatro, played by touch).
+//   2D (simple): the shoulder keys as rounded rectangles, ZL above L and ZR above R, each key's outer edge level with the cluster's outer edge; − just inboard of L3 and + just inboard of R3, at the gap the shoulder keys keep from them, in every layout (L3 / R3 hide in 2D, the pills stay where they are); the left stick in the bottom-left corner and not drawn: a touch in the left third of the screen holds it, centred where it lands, and only its knob shows under the finger (tilt measured from that centre, small dead zone);
 //     the A (right) B (bottom) X (top) Y (left) diamond in the bottom-right corner, sliding a finger between keys switches keys. Each bottom corner holds a single control, so it sits close in (reaching halfway into the side safe-area inset).
 //   3D (full, Pro Controller style): everything in 2D (left stick and diamond keep their place and size), plus the D-pad in the bottom-left corner as the diamond's mirror — the same footprint on that side, the cross scaled to reach where the diamond's keys reach, 8-way as before — and a right stick
 //     (a touch landing in the right third of the screen on no control holds it: centred where it lands, the centre dragged along once the finger passes the stick radius, its knob under the finger like the left one) and L3 / R3 (small round keys in the top row, inward of ZL / ZR).
@@ -106,28 +106,30 @@ static void phone_motion_start(UIView *body) {
 
 // ---- Layout constants (in u; x measured from the outer edge, the right half mirrors) ----
 static const CGFloat
-    K_ZL_X = 44, K_ZL_Y = 40, K_ZL_R = 26,          // ZL / ZR: centre from the outer edge and the top, radius
-    K_L_X = 44, K_L_Y = 108, K_L_R = 24,            // L / R: same column as ZL / ZR
-    K_DROP_TIP = 1.45,                              // teardrop tip distance from the centre (times the radius)
+    K_ZL_Y = 40, K_ZL_H = 50, K_L_Y = 92, K_L_H = 36,   // ZL / ZR and L / R: each row's centre and height from the safe area's top (the mock's 77 and 57 px at 1.55 px per u); their x and width come from the cluster, so K_SH_W and dropRect place them
+    K_SH_W = 70, K_SH_GAP = 14, K_SH_TOP_ROUND = 15.5, K_SH_ROUND = 5,   // the shoulder keys: this wide (the mock's 109 px), this gap to the key beside them, ZL / ZR with their top corners at 24 px of the mock and their bottoms at 8, L / R at 8 all round
     K_CORNER_IN = 0.5,                              // how far the bottom-corner controls reach into the side safe-area inset (in landscape there is only the rounded screen corner there; the Dynamic Island is mid-edge)
-    K_FACE_X = 121, K_PAD_Y = 82,                   // diamond centre from the outer edge, 40 in from where it sat (the D-pad mirrors this same number on the left, so both clusters moved away from the corners); diamond and D-pad centre from the bottom (B's lower edge about 5 above it)
+    K_FACE_X = 141, K_PAD_Y = 92,                   // diamond centre from the outer edge, 60 in from where it first sat and 10 higher off the bottom (the D-pad mirrors both numbers on the left, so the two clusters move together); B's lower edge sits about 15 above the bottom
     K_FACE_GAP = 50, K_FACE_R = 27,                 // diamond: key distance from the centre, key radius
-    K_PILL_DX = 52, K_PILL_Y = 22, K_PILL_W = 50, K_PILL_H = 28,   // − / +: centre from the screen's midline (the middle goes to the layout button) and from the top, size
+    K_PILL_W = 50, K_PILL_H = 28,                   // − / +: their size; they sit on the L3 / R3 row (K_ZL_Y) just inboard of those keys, and the layout button shares that row, so the top row reads as one line
     K_SWAP_R = 15,                                  // layout button: top centre, level with − / +
     K_STICK_R = 77, K_KNOB_R = 30,                  // left stick: its tilt radius, kept from when its ring was drawn; the knob a little larger than a diamond key
     K_FULL = 0.8,                                   // full tilt at this fraction of the stick radius (the knob still travels to the stick radius)
     K_DEAD = 0.1,                                   // stick dead zone (times the stick radius)
     // controls only the 3D layout has
-    K_DPAD_R = 77, K_ARM_W = 27, K_ARM_IN = 18,     // D-pad: the diamond's mirror, so its footprint is the diamond's (K_FACE_GAP + K_FACE_R); the cross scaled by 77/48 from the old 48 / 17 / 11 — arm outer edge from the centre, half-width, tip from the centre
+    K_DPAD_R = 77, K_ARM_W = 27, K_ARM_IN = 11,     // D-pad: the diamond's mirror, so its footprint is the diamond's (K_FACE_GAP + K_FACE_R); the cross scaled by 77/48 from the old 48 / 17 / 11, and its arms then reach to 11 from the centre (the mock's 66 px length) so the four keys grow inward and the gap between them closes without any key getting wider — arm outer edge from the centre, half-width, tip from the centre
     K_DPAD_GRAB = 1.3,                              // D-pad grab radius (times the outer edge)
     K_RSTICK_R = 60,                                // right stick: tilt radius around its centre, the touch-down point
     K_SWIPE = 1.0 / 3,                              // a stick's area: this fraction of the screen width from its own edge (not in u)
-    K_CLICK_X = 102, K_CLICK_R = 17;                // L3 / R3: centre from the outer edge (level with ZL / ZR), radius
+    K_CLICK_R = 17, K_CLICK_X = K_FACE_X - (K_FACE_GAP + K_FACE_R) + K_SH_W + K_SH_GAP + K_CLICK_R;   // L3 / R3: the shoulder key's inner edge, the gap, then their radius - they follow the cluster wherever it sits
 static const int k_btns[] = {B_ZL, B_L, B_ZR, B_R, B_MINUS, B_PLUS, B_LS, B_RS};   // keys locked at touch-down (L3 / R3 only in the 3D layout)
 static NSString *const k_layout_key = @"DmPadLayout";   // NSUserDefaults: 0 = 2D, 1 = 3D, 2 = Tap (DM_GAME_PAD_LAYOUT's numbers)
 int dm_opmode(void);   // hle_oe.c: 0 = handheld
+void dm_pad_menu_show(UIView *view, CGPoint at);   // front_ios.m: the menu the button opens (the layouts, the cheats slot, quitting the game)
 
 @interface DmGamepad : UIView
+- (void)applyLayoutIndex:(int)l;   // the menu's layout choice: 0 = 2D, 1 = 3D, 2 = Touch-only
+- (int)layoutIndex;               // the current one, in the same numbers
 @end
 static __weak DmGamepad *g_view;
 static void pads_start(void);   // Physical controllers, below
@@ -225,8 +227,8 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }   
     _swapLabel.string = _tap ? @"Tap" : _full ? @"3D" : @"2D";
     [CATransaction commit];
 }
-- (void)nextLayout {   // 2D → 3D (→ Tap in handheld mode) → 2D: release every touch first (no key stays held), save, lay out again
-    int l = _tap ? 0 : _full ? (dm_opmode() == 0 ? 2 : 0) : 1;
+- (int)layoutIndex { return _tap ? 2 : _full ? 1 : 0; }   // what the menu marks as current
+- (void)applyLayoutIndex:(int)l {   // the menu's choice: release every touch first (no key stays held), save, lay out again
     [self reset];
     _full = l == 1; _tap = l == 2;
     [NSUserDefaults.standardUserDefaults setObject:@(l) forKey:k_layout_key];
@@ -251,21 +253,26 @@ static CGPoint side(CGRect s, int right, CGFloat dx, CGFloat y) { return CGPoint
 - (CGFloat)dpadR { return K_DPAD_R * self.u; }
 static BOOL isDrop(int b) { return b == B_ZL || b == B_L || b == B_ZR || b == B_R; }
 static BOOL isClick(int b) { return b == B_LS || b == B_RS; }
-- (CGPoint)dropCenter:(int)b { CGRect s = self.safe; CGFloat u = self.u; BOOL z = b == B_ZL || b == B_ZR;
-    return side(s, b == B_ZR || b == B_R, (z ? K_ZL_X : K_L_X) * u, CGRectGetMinY(s) + (z ? K_ZL_Y : K_L_Y) * u); }
-- (CGFloat)dropR:(int)b { return (b == B_ZL || b == B_ZR ? K_ZL_R : K_L_R) * self.u; }
-- (CGPoint)clickCenter:(int)b { CGRect s = self.safe; CGFloat u = self.u; return side(s, b == B_RS, K_CLICK_X * u, CGRectGetMinY(s) + K_ZL_Y * u); }
-- (CGRect)pillRect:(int)b { CGRect s = self.safe; CGFloat u = self.u, w = K_PILL_W * u, h = K_PILL_H * u;
-    CGPoint c = CGPointMake(CGRectGetMidX(s) + (b == B_PLUS ? K_PILL_DX : -K_PILL_DX) * u, CGRectGetMinY(s) + K_PILL_Y * u);   // − on the left, + on the right
-    return CGRectMake(c.x - w / 2, c.y - h / 2, w, h); }
-- (CGPoint)swapCenter { CGRect s = self.safe; return CGPointMake(CGRectGetMidX(s), CGRectGetMinY(s) + K_PILL_Y * self.u); }
+- (CGPoint)dropCenter:(int)b { CGRect s = self.safe, c = self.corner; CGFloat u = self.u; BOOL z = b == B_ZL || b == B_ZR;
+    CGFloat x = K_FACE_X - (K_FACE_GAP + K_FACE_R) + K_SH_W / 2;
+    // x from the corner frame, the one the D-pad and diamond use: measuring it from the safe area left the keys half the notch inset (29 pt) further in than the cluster's outer edge, which is what they were drawn to line up with
+    return side(c, b == B_ZR || b == B_R, x * u, CGRectGetMinY(s) + (z ? K_ZL_Y : K_L_Y) * u); }
+- (CGRect)dropRect:(int)b { CGFloat h = (b == B_ZL || b == B_ZR ? K_ZL_H : K_L_H) * self.u; CGPoint c = [self dropCenter:b];
+    return CGRectMake(c.x - K_SH_W * self.u / 2, c.y - h / 2, K_SH_W * self.u, h); }
+- (CGPoint)clickCenter:(int)b { CGFloat u = self.u; return side(self.corner, b == B_RS, K_CLICK_X * u, CGRectGetMinY(self.safe) + K_ZL_Y * u); }   // the corner frame, as with the shoulder keys, so L3 / R3 keep their gap from the key beside them
+- (CGRect)pillRect:(int)b { CGRect c = self.corner, s = self.safe; CGFloat u = self.u, w = K_PILL_W * u, h = K_PILL_H * u;
+    // − just inboard of L3, + just inboard of R3, at the gap the shoulder keys keep from them; from the corner frame like the clusters, so the pair stays symmetric and the pills hold their place in every layout (L3 / R3 hide in 2D, these do not move)
+    CGFloat x = (K_CLICK_X + K_CLICK_R + K_SH_GAP + K_PILL_W / 2) * u;   // one gap beyond L3 / R3, so the top row reads as one line with the keys it sits beside
+    CGFloat cx = b == B_PLUS ? CGRectGetMaxX(c) - x : CGRectGetMinX(c) + x;
+    return CGRectMake(cx - w / 2, CGRectGetMinY(s) + K_ZL_Y * u - h / 2, w, h); }   // the − / + row is the L3 / R3 row (K_ZL_Y), so they are inline with those keys
+- (CGPoint)swapCenter { CGRect s = self.safe; return CGPointMake(CGRectGetMidX(s), CGRectGetMinY(s) + K_ZL_Y * self.u); }   // the same row as the pills and L3 / R3
 
 static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); }
 - (int)btnAt:(CGPoint)p {   // locked keys (tested on touch-down only, then locked)
     CGFloat u = self.u;
     for (int i = 0; i < (int)(sizeof k_btns / sizeof *k_btns); i++) { int b = k_btns[i];
         if (fullOnly(b) && !_full) continue;
-        BOOL hit = isDrop(b) ? dist(p, [self dropCenter:b]) <= [self dropR:b] * 1.35
+        BOOL hit = isDrop(b) ? CGRectContainsPoint(CGRectInset([self dropRect:b], -8 * u, -6 * u), p)
                  : isClick(b) ? dist(p, [self clickCenter:b]) <= K_CLICK_R * u * 1.35
                  : CGRectContainsPoint(CGRectInset([self pillRect:b], -8 * u, -8 * u), p);
         if (hit) return b; }
@@ -391,7 +398,7 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
     }
     if (game) [self pushGame];
     [self recompute];
-    if (swap) [self nextLayout];
+    if (swap) dm_pad_menu_show(self, self.swapCenter);   // the menu opens over the game, which keeps running: the Mac window's menus work the same way
 }
 - (void)touchesEnded:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self endTouches:ts tapped:YES]; }
 - (void)touchesCancelled:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self endTouches:ts tapped:NO]; }
@@ -399,14 +406,17 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
 
 // ---- Shapes ----
 static CGPathRef circlePath(CGPoint c, CGFloat r) { return CGPathCreateWithEllipseInRect(CGRectMake(c.x - r, c.y - r, 2 * r, 2 * r), NULL); }
-static CGPathRef dropPath(CGPoint c, CGFloat r, CGFloat tipAngle, CGFloat round) {   // teardrop: circle + two tangents meeting at the tip, tip slightly rounded
-    CGFloat d = r * K_DROP_TIP, th = acos(r / d);
-    CGPoint tip = CGPointMake(c.x + d * cos(tipAngle), c.y + d * sin(tipAngle));
-    CGPoint p1 = CGPointMake(c.x + r * cos(tipAngle + th), c.y + r * sin(tipAngle + th)), p2 = CGPointMake(c.x + r * cos(tipAngle - th), c.y + r * sin(tipAngle - th));
+// A rectangle with its own radius at each corner (top left, top right, bottom right, bottom left): CoreGraphics' one-call rounding is C++ only, and the shoulder keys want the top corners rounder than the bottom ones.
+static CGPathRef roundRectCorners(CGRect r, CGFloat tl, CGFloat tr, CGFloat br, CGFloat bl) {
     CGMutablePathRef p = CGPathCreateMutable();
-    CGPathMoveToPoint(p, NULL, p2.x, p2.y);
-    CGPathAddArcToPoint(p, NULL, tip.x, tip.y, p1.x, p1.y, round);
-    CGPathAddArc(p, NULL, c.x, c.y, r, tipAngle + th, tipAngle - th + 2 * M_PI, false);
+    CGPathMoveToPoint(p, NULL, r.origin.x, r.origin.y + tl);
+    CGPathAddArcToPoint(p, NULL, r.origin.x, r.origin.y, r.origin.x + tl, r.origin.y, tl);
+    CGPathAddLineToPoint(p, NULL, CGRectGetMaxX(r) - tr, r.origin.y);
+    CGPathAddArcToPoint(p, NULL, CGRectGetMaxX(r), r.origin.y, CGRectGetMaxX(r), r.origin.y + tr, tr);
+    CGPathAddLineToPoint(p, NULL, CGRectGetMaxX(r), CGRectGetMaxY(r) - br);
+    CGPathAddArcToPoint(p, NULL, CGRectGetMaxX(r), CGRectGetMaxY(r), CGRectGetMaxX(r) - br, CGRectGetMaxY(r), br);
+    CGPathAddLineToPoint(p, NULL, r.origin.x + bl, CGRectGetMaxY(r));
+    CGPathAddArcToPoint(p, NULL, r.origin.x, CGRectGetMaxY(r), r.origin.x, CGRectGetMaxY(r) - bl, bl);
     CGPathCloseSubpath(p); return p;
 }
 static CGPathRef armPath(CGPoint c, CGFloat R, CGFloat w, CGFloat in, CGFloat angle, CGFloat round) {   // one D-pad arm: an upward pentagon (tip toward the centre) rotated by angle around the centre
@@ -436,8 +446,10 @@ static void placeLabel(CATextLayer *t, CGPoint c, CGFloat fs) {
     for (int b = B_A; b <= B_Y; b++) { CGPoint c = [self facePos:b]; setPath(_key[b], circlePath(c, self.faceR)); placeLabel(_label[b], c, 20 * u); }
     for (int i = 0; i < (int)(sizeof k_btns / sizeof *k_btns); i++) { int b = k_btns[i];
         if (isDrop(b)) {
-            BOOL right = b == B_ZR || b == B_R; CGPoint c = [self dropCenter:b];
-            setPath(_key[b], dropPath(c, [self dropR:b], right ? -M_PI_4 : -3 * M_PI_4, 4 * u)); placeLabel(_label[b], c, 16 * u);   // tip toward the near top corner
+            CGRect rc = [self dropRect:b]; BOOL z = b == B_ZL || b == B_ZR;
+            CGFloat top = (z ? K_SH_TOP_ROUND : K_SH_ROUND) * u, bot = K_SH_ROUND * u;
+            setPath(_key[b], roundRectCorners(rc, top, top, bot, bot));   // the top corners follow the screen's rounding, the bottom ones stay crisp
+            placeLabel(_label[b], CGPointMake(CGRectGetMidX(rc), CGRectGetMidY(rc)), 16 * u);
         } else if (isClick(b)) {
             CGPoint c = [self clickCenter:b]; setPath(_key[b], circlePath(c, K_CLICK_R * u)); placeLabel(_label[b], c, 13 * u);
         } else {
@@ -548,6 +560,9 @@ static BOOL pads_slotted(GCController *gone) {
 @end
 
 UIView *dm_gamepad_view(CGRect frame) { DmGamepad *v = [[DmGamepad alloc] initWithFrame:frame]; g_view = v; return v; }
+int dm_gamepad_layout(void) { DmGamepad *v = g_view; return v ? v.layoutIndex : 0; }   // a strong local: g_view is a weak reference
+int dm_gamepad_tap_available(void) { return dm_opmode() == 0; }   // the game reads the touch screen only in handheld mode, so that is the only time the menu offers Touch-only
+void dm_gamepad_set_layout(int l) { DmGamepad *v = g_view; if (v) [v applyLayoutIndex:l]; }
 void dm_gamepad_active(void) { dispatch_async(dispatch_get_main_queue(), ^{ for (GCController *c in GCController.controllers) dm_motion_rearm(c); }); }   // On become active: motion_apple.h
 void dm_gamepad_reset(void) {   // On resign active: release everything (a key held while switching away and released in background gets no "release")
     dispatch_async(dispatch_get_main_queue(), ^{ [g_view reset]; });
