@@ -109,7 +109,7 @@ static const CGFloat
     K_ZL_Y = 40, K_ZL_H = 50, K_L_Y = 92, K_L_H = 36,   // ZL / ZR and L / R: each row's centre and height from the safe area's top (the mock's 77 and 57 px at 1.55 px per u); their x and width come from the cluster, so K_SH_W and dropRect place them
     K_SH_W = 70, K_SH_GAP = 14, K_SH_TOP_ROUND = 15.5, K_SH_ROUND = 5,   // the shoulder keys: this wide (the mock's 109 px), this gap to the key beside them, ZL / ZR with their top corners at 24 px of the mock and their bottoms at 8, L / R at 8 all round
     K_CORNER_IN = 0.5,                              // how far the bottom-corner controls reach into the side safe-area inset (in landscape there is only the rounded screen corner there; the Dynamic Island is mid-edge)
-    K_FACE_X = 141, K_PAD_Y = 92,                   // diamond centre from the outer edge, 60 in from where it first sat and 10 higher off the bottom (the D-pad mirrors both numbers on the left, so the two clusters move together); B's lower edge sits about 15 above the bottom
+    K_FACE_X = 141, K_PAD_Y = 98,                   // diamond centre from the outer edge, 60 in from where it first sat and 16 higher off the bottom (the D-pad mirrors both numbers on the left, so the two clusters move together); B's lower edge sits about 21 above the bottom
     K_FACE_GAP = 50, K_FACE_R = 27,                 // diamond: key distance from the centre, key radius
     K_PILL_W = 50, K_PILL_H = 28,                   // − / +: their size; they sit on the L3 / R3 row (K_ZL_Y) just inboard of those keys, and the layout button shares that row, so the top row reads as one line
     K_SWAP_R = 15,                                  // layout button: top centre, level with − / +
