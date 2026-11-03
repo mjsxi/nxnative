@@ -107,21 +107,21 @@ static void phone_motion_start(UIView *body) {
 // ---- Layout constants (in u; x measured from the outer edge, the right half mirrors) ----
 static const CGFloat
     K_ZL_Y = 40, K_ZL_H = 50, K_L_Y = 92, K_L_H = 36,   // ZL / ZR and L / R: each row's centre and height from the safe area's top (the mock's 77 and 57 px at 1.55 px per u); their x and width come from the cluster, so K_SH_W and dropRect place them
-    K_SH_W = 70, K_SH_GAP = 14, K_SH_TOP_ROUND = 15.5, K_SH_ROUND = 5,   // the shoulder keys: this wide (the mock's 109 px), this gap to the key beside them, ZL / ZR with their top corners at 24 px of the mock and their bottoms at 8, L / R at 8 all round
+    K_SH_X = 99, K_SH_W = 70, K_SH_GAP = 14, K_SH_TOP_ROUND = 15.5, K_SH_ROUND = 5,   // the shoulder keys: centre from the outer edge, and their width (the mock's 109 px) - frozen where they lined up with the cluster's outer edge, so the top row stayed put when the clusters shrank; this gap to the key beside them; ZL / ZR with their top corners at 24 px of the mock and their bottoms at 8, L / R at 8 all round
     K_CORNER_IN = 0.5,                              // how far the bottom-corner controls reach into the side safe-area inset (in landscape there is only the rounded screen corner there; the Dynamic Island is mid-edge)
-    K_FACE_X = 141, K_PAD_Y = 86,                   // diamond centre from the outer edge, 60 in from where it first sat and 4 higher off the bottom (the D-pad mirrors both numbers on the left, so the two clusters move together); B's lower edge sits about 9 above the bottom
-    K_FACE_GAP = 50, K_FACE_R = 27,                 // diamond: key distance from the centre, key radius
+    K_FACE_X = 152, K_PAD_Y = 74,                   // diamond centre from the outer edge and from the bottom: the two clusters are 15 % smaller than they were, shrunk around the corner nearest the screen's middle at the bottom (the D-pad mirrors both numbers on the left, so that corner is the same anchor on both sides); every other control stayed where it was
+    K_FACE_GAP = 42, K_FACE_R = 24,                 // diamond: key distance from the centre, key radius - 85 % of the first 50 / 27, rounded to even numbers; their sum is the D-pad's reach, so the two clusters keep the same footprint
     K_PILL_W = 50, K_PILL_H = 28,                   // − / +: their size; they sit on the L3 / R3 row (K_ZL_Y) just inboard of those keys, and the layout button shares that row, so the top row reads as one line
     K_SWAP_R = 15,                                  // layout button: top centre, level with − / +
     K_STICK_R = 77, K_KNOB_R = 30,                  // left stick: its tilt radius, kept from when its ring was drawn; the knob a little larger than a diamond key
     K_FULL = 0.8,                                   // full tilt at this fraction of the stick radius (the knob still travels to the stick radius)
     K_DEAD = 0.1,                                   // stick dead zone (times the stick radius)
     // controls only the 3D layout has
-    K_DPAD_R = 77, K_ARM_W = 27, K_ARM_IN = 11,     // D-pad: the diamond's mirror, so its footprint is the diamond's (K_FACE_GAP + K_FACE_R); the cross scaled by 77/48 from the old 48 / 17 / 11, and its arms then reach to 11 from the centre (the mock's 66 px length) so the four keys grow inward and the gap between them closes without any key getting wider — arm outer edge from the centre, half-width, tip from the centre
+    K_DPAD_R = 66, K_ARM_W = 24, K_ARM_IN = 10,     // D-pad: the diamond's mirror, so its footprint is the diamond's (K_FACE_GAP + K_FACE_R); 85 % of the 77 / 27 / 11 it had, rounded to even numbers, its arms still reaching near the centre so the four keys read together rather than as four wide-bladed keys - arm outer edge from the centre, half-width, tip from the centre
     K_DPAD_GRAB = 1.3,                              // D-pad grab radius (times the outer edge)
     K_RSTICK_R = 60,                                // right stick: tilt radius around its centre, the touch-down point
     K_SWIPE = 1.0 / 3,                              // a stick's area: this fraction of the screen width from its own edge (not in u)
-    K_CLICK_R = 17, K_CLICK_X = K_FACE_X - (K_FACE_GAP + K_FACE_R) + K_SH_W + K_SH_GAP + K_CLICK_R;   // L3 / R3: the shoulder key's inner edge, the gap, then their radius - they follow the cluster wherever it sits
+    K_CLICK_R = 17, K_CLICK_X = K_SH_X + K_SH_W / 2 + K_SH_GAP + K_CLICK_R;   // L3 / R3: the shoulder key's inner edge, the gap, then their radius - they follow the shoulder keys, which hold their place
 static const int k_btns[] = {B_ZL, B_L, B_ZR, B_R, B_MINUS, B_PLUS, B_LS, B_RS};   // keys locked at touch-down (L3 / R3 only in the 3D layout)
 static NSString *const k_layout_key = @"DmPadLayout";   // NSUserDefaults: 0 = 2D, 1 = 3D, 2 = Tap (DM_GAME_PAD_LAYOUT's numbers)
 int dm_opmode(void);   // hle_oe.c: 0 = handheld
@@ -254,7 +254,7 @@ static CGPoint side(CGRect s, int right, CGFloat dx, CGFloat y) { return CGPoint
 static BOOL isDrop(int b) { return b == B_ZL || b == B_L || b == B_ZR || b == B_R; }
 static BOOL isClick(int b) { return b == B_LS || b == B_RS; }
 - (CGPoint)dropCenter:(int)b { CGRect s = self.safe, c = self.corner; CGFloat u = self.u; BOOL z = b == B_ZL || b == B_ZR;
-    CGFloat x = K_FACE_X - (K_FACE_GAP + K_FACE_R) + K_SH_W / 2;
+    CGFloat x = K_SH_X * u;   // the corner frame (the clusters' own), but a position of its own: the shoulder row lined up with the cluster's outer edge and was to stay put when the clusters shrank
     // x from the corner frame, the one the D-pad and diamond use: measuring it from the safe area left the keys half the notch inset (29 pt) further in than the cluster's outer edge, which is what they were drawn to line up with
     return side(c, b == B_ZR || b == B_R, x * u, CGRectGetMinY(s) + (z ? K_ZL_Y : K_L_Y) * u); }
 - (CGRect)dropRect:(int)b { CGFloat h = (b == B_ZL || b == B_ZR ? K_ZL_H : K_L_H) * self.u; CGPoint c = [self dropCenter:b];
