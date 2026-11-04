@@ -1,16 +1,16 @@
 // Virtual gamepad (Nintendo button positions) + physical controllers (GameController), handed to the host through dm_input_set and dm_pad_set_player (hle_hid.c, bit layout in dm_input.h).
-//   Two layouts, three in handheld mode; a tap on the menu button at the top centre (labelled with the current layout, "2D" / "3D" / "Tap") opens the game's menu, where the layout is picked and the game can be quit (front_ios.m, dm_pad_menu_show); the choice is kept in NSUserDefaults (each game is its own app, so per game); the first launch uses the game profile's pad_layout (DM_GAME_PAD_LAYOUT).
+//   Two layouts, three in handheld mode, picked in the in-game menu (GameMenu.swift) that the gear button at the top centre opens; the choice is kept in NSUserDefaults (each game is its own app, so per game); the first launch uses the game profile's pad_layout (DM_GAME_PAD_LAYOUT). The gear stays while a physical controller is connected, so the menu is there in every layout and with every controller.
 //   Tap (touch): no control but the menu button, every other touch goes to the game's touch screen; the menu offers it only while the game is in handheld mode, the only one in which it reads the touch screen (Balatro, played by touch).
 //   2D (simple): the shoulder keys as rounded rectangles, ZL above L and ZR above R, each key's outer edge level with the cluster's outer edge; − just inboard of L3 and + just inboard of R3, at the gap the shoulder keys keep from them, in every layout (L3 / R3 hide in 2D, the pills stay where they are); the left stick in the bottom-left corner and not drawn: a touch in the left third of the screen holds it, centred where it lands, and only its knob shows under the finger (tilt measured from that centre, small dead zone);
 //     the A (right) B (bottom) X (top) Y (left) diamond in the bottom-right corner, sliding a finger between keys switches keys. Each bottom corner holds a single control, so it sits close in (reaching halfway into the side safe-area inset).
 //   3D (full, Pro Controller style): everything in 2D (left stick and diamond keep their place and size), plus the D-pad in the bottom-left corner as the diamond's mirror — the same footprint on that side, the cross scaled to reach where the diamond's keys reach, 8-way as before — and a right stick
 //     (a touch landing in the right third of the screen on no control holds it: centred where it lands, the centre dragged along once the finger passes the stick radius, its knob under the finger like the left one) and L3 / R3 (small round keys in the top row, inward of ZL / ZR).
 //     Breath of the Wild crouches with L3 and uses the scope with R3; 3D World and Breath of the Wild turn the camera with the right stick.
-//   Touch-down ownership: locked keys first (shoulders, − / +, the layout button, L3 / R3), then whichever of the diamond and the D-pad is nearer by distance over its grab radius (in 3D the D-pad takes its own footprint, so a stick never starts under it),
+//   Touch-down ownership: locked keys first (shoulders, − / +, L3 / R3), the gear taking a touch in its hit circle when it is nearer than a key (DmMenuButton, menuTakes:), then whichever of the diamond and the D-pad is nearer by distance over its grab radius (in 3D the D-pad takes its own footprint, so a stick never starts under it),
 //     then a stick for a touch in the third on its own side: the left third in both layouts, the right third in 3D. The stick already held is not taken twice, so a second thumb lands on the other one.
 //   Everything hugs the edges and corners to leave the picture room; controls sit over the picture, one CAShapeLayer each: a press only swaps the fill, a stick shows its knob only while it is held, nothing redraws the whole screen.
 //   Touches no control takes (those outside the thirds the two sticks take) go to the game's touch screen (pushGame; Super Mario Galaxy's pointer in handheld mode).
-//   The virtual gamepad (layout button included) hides while a physical controller is connected and comes back when it is removed; meanwhile every touch goes to the game. Physical controllers keep every button (D-pad and right stick included) and map by position: bottom = B, right = A, left = Y, top = X (same positions as on a Switch controller); a Nintendo pad maps by its labels (pad_apple.h).
+//   The virtual gamepad (all but the gear button) hides while a physical controller is connected and comes back when it is removed; meanwhile every touch goes to the game. Physical controllers keep every button (D-pad and right stick included) and map by position: bottom = B, right = A, left = Y, top = X (same positions as on a Switch controller); a Nintendo pad maps by its labels (pad_apple.h).
 //   Each physical controller is a player of its own (local co-op), as on the Mac: the first one connected is player 1, together with the touch gamepad, the next player 2, and so on up to 8; see "Physical controllers" below.
 //   Shaking the phone shakes the controller (DM_BTN_SHAKE: its six-axis sensor, hle_hid.c), whichever controls are in use; see "Shaking the phone" below.
 #import <UIKit/UIKit.h>
@@ -18,6 +18,8 @@
 #import <CoreMotion/CoreMotion.h>
 #import <CoreText/CoreText.h>
 #include <pthread.h>
+#import "DmLayout.h"   // where the picture and the controls go (front_ios.m lays them out)
+#import "DmGameMenu.h"  // the in-game menu the gear opens (GameMenu.swift)
 #include "dm.h"
 #include "dm_input.h"
 #include "front.h"
@@ -30,7 +32,7 @@
 #include <stdatomic.h>
 
 enum { B_A = 0, B_B, B_X, B_Y, B_LS, B_RS, B_L, B_R, B_ZL, B_ZR, B_PLUS, B_MINUS, B_LEFT, B_UP, B_RIGHT, B_DOWN, B_N };
-enum { C_NONE = 0, C_STICK, C_DPAD, C_FACE, C_BTN, C_SWAP, C_GAME };   // which control a touch holds; C_GAME: none, the touch goes to the game's touch screen (finger slot << 8)
+enum { C_NONE = 0, C_STICK, C_DPAD, C_FACE, C_BTN, C_GAME };   // which control a touch holds; C_GAME: none, the touch goes to the game's touch screen (finger slot << 8)
 
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 static uint64_t g_touch_btn, g_shake_btn;
@@ -112,7 +114,7 @@ static const CGFloat
     K_FACE_X = 152, K_PAD_Y = 74,                   // diamond centre from the outer edge and from the bottom: the two clusters are 15 % smaller than they were, shrunk around the corner nearest the screen's middle at the bottom (the D-pad mirrors both numbers on the left, so that corner is the same anchor on both sides); every other control stayed where it was
     K_FACE_GAP = 42, K_FACE_R = 24,                 // diamond: key distance from the centre, key radius - 85 % of the first 50 / 27, rounded to even numbers; their sum is the D-pad's reach, so the two clusters keep the same footprint
     K_PILL_W = 50, K_PILL_H = 28,                   // − / +: their size; they sit on the L3 / R3 row (K_ZL_Y) just inboard of those keys, and the layout button shares that row, so the top row reads as one line
-    K_SWAP_R = 15,                                  // layout button: top centre, level with − / +
+    K_MENU_R = 15,                                  // the gear that opens the in-game menu: top centre, on the − / + row; it takes a touch within 1.6 times this (at least 22 points, half of a 44-point target)
     K_STICK_R = 77, K_KNOB_R = 30,                  // left stick: its tilt radius, kept from when its ring was drawn; the knob a little larger than a diamond key
     K_FULL = 0.8,                                   // full tilt at this fraction of the stick radius (the knob still travels to the stick radius)
     K_DEAD = 0.1,                                   // stick dead zone (times the stick radius)
@@ -125,11 +127,17 @@ static const CGFloat
 static const int k_btns[] = {B_ZL, B_L, B_ZR, B_R, B_MINUS, B_PLUS, B_LS, B_RS};   // keys locked at touch-down (L3 / R3 only in the 3D layout)
 static NSString *const k_layout_key = @"DmPadLayout";   // NSUserDefaults: 0 = 2D, 1 = 3D, 2 = Tap (DM_GAME_PAD_LAYOUT's numbers)
 int dm_opmode(void);   // hle_oe.c: 0 = handheld
-void dm_pad_menu_show(UIView *view, CGPoint at);   // front_ios.m: the menu the button opens (the layouts, the cheats slot, quitting the game)
 
 @interface DmGamepad : UIView
-- (void)applyLayoutIndex:(int)l;   // the menu's layout choice: 0 = 2D, 1 = 3D, 2 = Touch-only
-- (int)layoutIndex;               // the current one, in the same numbers
+- (void)arrange:(DmLayout)layout;   // front_ios.m: where the picture and the controls are
+- (BOOL)menuTakes:(CGPoint)p;       // the gear's own hit circle vs a locked key's nearer touch
+@end
+// The gear: a UIButton whose menu is the in-game menu (UIKit draws it and takes the touches while it is open). Its hit circle is larger than the drawn
+// gear and − / + sit beside it, so it asks the pad which of the two a touch belongs to.
+@interface DmMenuButton : UIButton
+@end
+@implementation DmMenuButton
+- (BOOL)pointInside:(CGPoint)p withEvent:(UIEvent *)e { DmGamepad *pad = (DmGamepad *)self.superview; return [pad menuTakes:[self convertPoint:p toView:self.superview]]; }
 @end
 static __weak DmGamepad *g_view;
 static void pads_start(void);   // Physical controllers, below
@@ -142,7 +150,8 @@ static void pads_start(void);   // Physical controllers, below
     NSMapTable<UITouch *, NSNumber *> *_faceOf;    // which keys each touch on the diamond currently holds
     CAShapeLayer *_key[B_N]; CATextLayer *_label[B_N];   // one layer per key
     CAShapeLayer *_knob[2];                        // each stick's moving part: shown only while that stick is held, at its centre plus the tilt
-    CAShapeLayer *_swap; CATextLayer *_swapLabel; BOOL _swapHeld;
+    DmMenuButton *_menu;                           // the gear: opens the in-game menu (GameMenu.swift)
+    DmLayout _layout;                              // where the picture and the controls are (front_ios.m arranges them)
     UIImpactFeedbackGenerator *_touchFeedback;       // one short feedback per touch-control press edge
     unsigned _hapticSticks;
     BOOL _stickShown;                              // a stick was drawn at the last refresh
@@ -178,6 +187,10 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }   
 
 - (instancetype)initWithFrame:(CGRect)f {
     if ((self = [super initWithFrame:f])) {
+        _layout = dm_layout(self.bounds, UIEdgeInsetsZero, NO, CGRectNull, DM_PICTURE_16_9);   // until the front end arranges it
+        [self registerForTraitChanges:@[UITraitDisplayScale.class] withHandler:^(id<UITraitEnvironment> environment, UITraitCollection *previous) {
+            [(UIView *)environment setNeedsLayout];
+        }];
         self.multipleTouchEnabled = YES; self.opaque = NO; self.backgroundColor = UIColor.clearColor;
         const char *feedback = getenv("DM_TOUCH_HAPTICS");
         if (!feedback || atoi(feedback)) {
@@ -204,7 +217,14 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }   
             _key[b] = shape(_controls);
             if (names[b]) _label[b] = label(_key[b], names[b]);   // the D-pad arms carry no label
         }
-        _swap = shape(_controls); _swapLabel = label(_swap, @"");
+        _menu = [DmMenuButton buttonWithType:UIButtonTypeCustom];
+        _menu.backgroundColor = k_idle; _menu.layer.borderColor = k_line.CGColor; _menu.layer.borderWidth = 1.5;
+        _menu.layer.shadowColor = UIColor.blackColor.CGColor; _menu.layer.shadowOpacity = 0.2; _menu.layer.shadowRadius = 3; _menu.layer.shadowOffset = CGSizeMake(0, 1);
+        _menu.tintColor = k_text; _menu.accessibilityLabel = @"Menu";
+        _menu.menu = CFBridgingRelease(dm_game_menu()); _menu.showsMenuAsPrimaryAction = YES;
+        __weak DmGamepad *weakSelf = self;
+        [_menu addAction:[UIAction actionWithHandler:^(UIAction *a) { (void)a; [weakSelf reset]; }] forControlEvents:UIControlEventMenuActionTriggered];   // the menu opens: release every key and touch first
+        [self addSubview:_menu];
         NSNumber *saved = [NSUserDefaults.standardUserDefaults objectForKey:k_layout_key];
         int l = saved ? (int)saved.integerValue : DM_GAME_PAD_LAYOUT;
         if (l == 2 && dm_opmode() != 0) l = 0;   // Tap only in handheld mode (env.txt's DM_OPMODE may have changed it)
@@ -224,21 +244,37 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }   
     [CATransaction begin]; [CATransaction setDisableActions:YES];
     for (int b = 0; b < B_N; b++) _key[b].hidden = _tap || (fullOnly(b) && !_full);
     for (int i = 0; i < 2; i++) _knob[i].hidden = YES;   // a stick's knob shows only while it is held, so a layout change leaves none behind
-    _swapLabel.string = _tap ? @"Tap" : _full ? @"3D" : @"2D";
     [CATransaction commit];
 }
-- (int)layoutIndex { return _tap ? 2 : _full ? 1 : 0; }   // what the menu marks as current
-- (void)applyLayoutIndex:(int)l {   // the menu's choice: release every touch first (no key stays held), save, lay out again
+- (int)padLayout { return _tap ? 2 : _full ? 1 : 0; }   // what the in-game menu marks as current
+- (void)setPadLayout:(int)l {   // the in-game menu's pick: release every touch first (no key stays held), save, lay out again
+    if (l == 2 && dm_opmode() != 0) l = 0;   // Tap only in handheld mode, where the game reads the touch screen
     [self reset];
     _full = l == 1; _tap = l == 2;
     [NSUserDefaults.standardUserDefaults setObject:@(l) forKey:k_layout_key];
     [self applyLayout]; [self setNeedsLayout];
 }
+- (void)opmodeChanged {   // docked: the Tap layout goes (the game reads no touch screen then), unsaved, so handheld mode at the next start brings it back
+    if (!_tap || dm_opmode() == 0) return;
+    [self reset]; _tap = NO; _full = NO; [self applyLayout]; [self setNeedsLayout];
+}
+- (void)setTouchFeedback:(BOOL)on {
+    if (!on) { _touchFeedback = nil; return; }
+    if (!_touchFeedback) { _touchFeedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight]; [_touchFeedback prepare]; }
+}
+// The front end's placement call: a pose change releases what a finger held, so no key or game touch is left stuck.
+- (void)arrange:(DmLayout)layout {
+    if (CGRectEqualToRect(_layout.controls, layout.controls) && CGRectEqualToRect(_layout.game, layout.game) &&
+        _layout.separated == layout.separated && _layout.topSafeOnly == layout.topSafeOnly) return;
+    [self reset];
+    _layout = layout;
+    [self setNeedsLayout];
+}
 
-// ---- Layout (points; computed inside the safe area) ----
-- (CGRect)safe { return UIEdgeInsetsInsetRect(self.bounds, self.safeAreaInsets); }
-- (CGRect)corner { UIEdgeInsets i = self.safeAreaInsets; i.left *= K_CORNER_IN; i.right *= K_CORNER_IN; return UIEdgeInsetsInsetRect(self.bounds, i); }   // the rectangle the bottom-corner controls use
-- (CGFloat)u { return MIN(self.bounds.size.height / 430.0, 1.3); }   // 1 = 430 points tall (iPhone Pro Max landscape)
+// ---- Layout (points; inside the safe area, in the band front_ios.m gave the controls) ----
+- (CGRect)safe { return CGRectIntersection(_layout.controls, UIEdgeInsetsInsetRect(self.bounds, dm_game_safe_insets(self.bounds, self.safeAreaInsets, _layout.topSafeOnly))); }
+- (CGRect)corner { if (_layout.separated) return self.safe; UIEdgeInsets i = self.safeAreaInsets; i.left *= K_CORNER_IN; i.right *= K_CORNER_IN; return UIEdgeInsetsInsetRect(self.bounds, i); }   // the rectangle the bottom-corner controls use
+- (CGFloat)u { if (_layout.separated) { CGRect s = self.safe; return MIN(MIN(s.size.height / 430.0, s.size.width / 700.0), 1.3); } return MIN(self.bounds.size.height / 430.0, 1.3); }   // 1 = 430 points tall (iPhone Pro Max landscape)
 static CGPoint side(CGRect s, int right, CGFloat dx, CGFloat y) { return CGPointMake(right ? CGRectGetMaxX(s) - dx : CGRectGetMinX(s) + dx, y); }
 - (CGPoint)faceCenter { CGRect s = self.corner; CGFloat u = self.u; return side(s, 1, K_FACE_X * u, CGRectGetMaxY(s) - K_PAD_Y * u); }
 - (CGFloat)faceGap { return K_FACE_GAP * self.u; }
@@ -247,8 +283,8 @@ static CGPoint side(CGRect s, int right, CGFloat dx, CGFloat y) { return CGPoint
     switch (b) { case B_A: return CGPointMake(c.x + g, c.y); case B_B: return CGPointMake(c.x, c.y + g); case B_X: return CGPointMake(c.x, c.y - g); default: return CGPointMake(c.x - g, c.y); } }
 - (CGPoint)stickCentre:(int)i { return _sCentre[i]; }   // a stick is centred where its touch landed: neither has a resting place
 - (CGFloat)stickR:(int)i { return (i ? K_RSTICK_R : K_STICK_R) * self.u; }
-- (BOOL)inLeftArea:(CGPoint)p { CGRect b = self.bounds; return p.x <= CGRectGetMinX(b) + b.size.width * K_SWIPE; }   // the left stick's area, the mirror of the right's
-- (BOOL)inRightArea:(CGPoint)p { CGRect b = self.bounds; return p.x >= CGRectGetMaxX(b) - b.size.width * K_SWIPE; }
+- (BOOL)inLeftArea:(CGPoint)p { CGRect b = _layout.controls; return p.x <= CGRectGetMinX(b) + b.size.width * K_SWIPE; }   // the left stick's area, the mirror of the right's
+- (BOOL)inRightArea:(CGPoint)p { CGRect b = _layout.controls; return p.x >= CGRectGetMaxX(b) - b.size.width * K_SWIPE; }
 - (CGPoint)dpadCenter { CGRect s = self.corner; return side(s, 0, K_FACE_X * self.u, CGRectGetMaxY(s) - K_PAD_Y * self.u); }   // the diamond's mirror on the left side: where the left stick's ring used to sit
 - (CGFloat)dpadR { return K_DPAD_R * self.u; }
 static BOOL isDrop(int b) { return b == B_ZL || b == B_L || b == B_ZR || b == B_R; }
@@ -259,13 +295,14 @@ static BOOL isClick(int b) { return b == B_LS || b == B_RS; }
     return side(c, b == B_ZR || b == B_R, x * u, CGRectGetMinY(s) + (z ? K_ZL_Y : K_L_Y) * u); }
 - (CGRect)dropRect:(int)b { CGFloat h = (b == B_ZL || b == B_ZR ? K_ZL_H : K_L_H) * self.u; CGPoint c = [self dropCenter:b];
     return CGRectMake(c.x - K_SH_W * self.u / 2, c.y - h / 2, K_SH_W * self.u, h); }
-- (CGPoint)clickCenter:(int)b { CGFloat u = self.u; return side(self.corner, b == B_RS, K_CLICK_X * u, CGRectGetMinY(self.safe) + K_ZL_Y * u); }   // the corner frame, as with the shoulder keys, so L3 / R3 keep their gap from the key beside them
+- (CGPoint)clickCenter:(int)b { CGFloat u = self.u, edge = _layout.separated ? 22 : 0;   // a floor off the edges in a portrait / tabletop split, where the band is short
+    return side(self.corner, b == B_RS, MAX(K_CLICK_X * u, edge), CGRectGetMinY(self.safe) + MAX(K_ZL_Y * u, edge)); }   // the corner frame, as with the shoulder keys, so L3 / R3 keep their gap from the key beside them
 - (CGRect)pillRect:(int)b { CGRect c = self.corner, s = self.safe; CGFloat u = self.u, w = K_PILL_W * u, h = K_PILL_H * u;
     // − just inboard of L3, + just inboard of R3, at the gap the shoulder keys keep from them; from the corner frame like the clusters, so the pair stays symmetric and the pills hold their place in every layout (L3 / R3 hide in 2D, these do not move)
-    CGFloat x = (K_CLICK_X + K_CLICK_R + K_SH_GAP + K_PILL_W / 2) * u;   // one gap beyond L3 / R3, so the top row reads as one line with the keys it sits beside
-    CGFloat cx = b == B_PLUS ? CGRectGetMaxX(c) - x : CGRectGetMinX(c) + x;
-    return CGRectMake(cx - w / 2, CGRectGetMinY(s) + K_ZL_Y * u - h / 2, w, h); }   // the − / + row is the L3 / R3 row (K_ZL_Y), so they are inline with those keys
-- (CGPoint)swapCenter { CGRect s = self.safe; return CGPointMake(CGRectGetMidX(s), CGRectGetMinY(s) + K_ZL_Y * self.u); }   // the same row as the pills and L3 / R3
+    CGFloat x = (K_CLICK_X + K_CLICK_R + K_SH_GAP + K_PILL_W / 2) * u, edge = _layout.separated ? 22 : 0;   // one gap beyond L3 / R3, so the top row reads as one line with the keys it sits beside
+    CGFloat cx = b == B_PLUS ? CGRectGetMaxX(c) - MAX(x, edge) : CGRectGetMinX(c) + MAX(x, edge);
+    return CGRectMake(cx - w / 2, CGRectGetMinY(s) + MAX(K_ZL_Y * u, edge) - h / 2, w, h); }   // the − / + row is the L3 / R3 row (K_ZL_Y), so they are inline with those keys
+- (CGPoint)menuCenter { CGRect s = self.safe; return CGPointMake(CGRectGetMidX(s), CGRectGetMinY(s) + MAX(K_ZL_Y * self.u, _layout.separated ? 22 : 0)); }   // the gear, on the same row as the pills and L3 / R3
 
 static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); }
 - (int)btnAt:(CGPoint)p {   // locked keys (tested on touch-down only, then locked)
@@ -278,7 +315,12 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
         if (hit) return b; }
     return -1;
 }
-- (BOOL)inSwap:(CGPoint)p { return dist(p, self.swapCenter) <= K_SWAP_R * self.u * 1.6; }
+- (CGFloat)menuDistance:(CGPoint)p { return dist(p, self.menuCenter) / MAX(K_MENU_R * self.u * 1.6, 22); }   // the hit circle is larger than the drawn gear (a 44-point target)
+- (BOOL)menuTakes:(CGPoint)p {   // the gear takes a touch in its circle unless a locked key is drawn under it
+    if ([self menuDistance:p] > 1) return NO;
+    if (_tap || _padOff || (_layout.separated && !CGRectContainsPoint(_layout.controls, p))) return YES;
+    return [self btnAt:p] < 0;
+}
 - (uint64_t)faceAt:(CGPoint)p {   // keys under the finger in the diamond (between two keys both count)
     uint64_t m = 0; CGFloat r = self.faceR * 1.25;
     for (int b = B_A; b <= B_Y; b++) if (dist(p, [self facePos:b]) <= r) m |= 1ull << b;
@@ -304,11 +346,10 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
 // ---- Touch ----
 - (void)recompute {
     uint64_t face = 0; for (UITouch *t in _faceOf) face |= [_faceOf objectForKey:t].unsignedLongLongValue;
-    uint64_t btn = 0, dpad = 0; BOOL swap = NO;
+    uint64_t btn = 0, dpad = 0;
     for (UITouch *t in _owner) { uint64_t v = [_owner objectForKey:t].unsignedLongLongValue; int c = (int)(v & 0xff);
         if (c == C_BTN) btn |= 1ull << (v >> 8);
-        else if (c == C_DPAD) dpad |= [self dpadAt:[t locationInView:self]];
-        else if (c == C_SWAP) swap = YES; }
+        else if (c == C_DPAD) dpad |= [self dpadAt:[t locationInView:self]]; }
     int32_t ax[4] = {0};
     for (int i = 0; i < 2; i++) {
         CGPoint o = [self knobOffset:i]; CGFloat R = [self stickR:i], d = hypot(o.x, o.y), dz = R * K_DEAD;
@@ -316,14 +357,14 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
         CGFloat m = fmin((d - dz) / (R * K_FULL - dz), 1) / d;   // outside the dead zone: 0 rising to full at the full-tilt radius
         ax[i * 2] = (int32_t)lrint(o.x * m * 32767); ax[i * 2 + 1] = (int32_t)lrint(-o.y * m * 32767);   // host: up is positive; rounded so full tilt is exactly 32767
     }
-    BOOL changed = face != _faceBits || dpad != _dpadBits || btn != _btnBits || swap != _swapHeld;
+    BOOL changed = face != _faceBits || dpad != _dpadBits || btn != _btnBits;
     uint64_t pressed = (face | dpad | btn) & ~(_faceBits | _dpadBits | _btnBits);
     unsigned gripping = (_stick[0] ? 1u : 0) | (_stick[1] ? 2u : 0);
-    if (pressed || (swap && !_swapHeld) || (gripping & ~_hapticSticks)) {
+    if (pressed || (gripping & ~_hapticSticks)) {
         [_touchFeedback impactOccurredWithIntensity:0.6]; [_touchFeedback prepare];
     }
     _hapticSticks = gripping;
-    _faceBits = face; _dpadBits = dpad; _btnBits = btn; _swapHeld = swap;
+    _faceBits = face; _dpadBits = dpad; _btnBits = btn;
     pthread_mutex_lock(&g_mu);
     g_touch_btn = face | dpad | btn; g_touch_lx = ax[0]; g_touch_ly = ax[1]; g_touch_rx = ax[2]; g_touch_ry = ax[3];
     pthread_mutex_unlock(&g_mu);
@@ -335,28 +376,42 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
 // Touches no control takes (all of them while a physical controller is connected) go to the game's touch screen, normalized on the 16:9 picture that front_ios.m
 // centres in the screen: Super Mario Galaxy's pointer in handheld mode (profile op_mode). The host reports them only in handheld mode, as on the Switch (hle_hid.c touch_read)
 - (void)pushGame {
-    CGRect b = self.bounds; CGFloat w = b.size.width, h = b.size.height;
-    if (w <= 0 || h <= 0) return;
-    if (w / h > 16.0 / 9.0) w = h * 16.0 / 9.0; else h = w * 9.0 / 16.0;
-    CGFloat x0 = (b.size.width - w) / 2, y0 = (b.size.height - h) / 2;
+    CGRect b = _layout.game;   // the picture front_ios.m laid out: portrait and tabletop splits, and the cropped Fill picture (DmLayout.h)
+    if (b.size.width <= 0 || b.size.height <= 0) { dm_touch_set(NULL, 0); return; }
     dm_touch t[16]; int n = 0;
     for (int i = 0; i < 16; i++) if (_game[i]) {
-        CGPoint p = [_game[i] locationInView:self];
-        t[n++] = (dm_touch){(uint32_t)i, (float)fmin(fmax((p.x - x0) / w, 0), 0.999), (float)fmin(fmax((p.y - y0) / h, 0), 0.999)};
+        CGPoint p = dm_game_touch_point(b, [_game[i] locationInView:self]);
+        t[n++] = (dm_touch){(uint32_t)i, (float)p.x, (float)p.y};
     }
     dm_touch_set(t, n);
 }
 - (BOOL)gameBegin:(UITouch *)t {
+    if (CGRectIsEmpty(_layout.game) || (_layout.separated && !CGRectContainsPoint(_layout.game, [t locationInView:self]))) return NO;
     for (int i = 0; i < 16; i++) if (!_game[i]) { _game[i] = t; [_owner setObject:@(C_GAME | (uint64_t)i << 8) forKey:t]; return YES; }
     return NO;
+}
+// While an offline HTML page is shown over the picture (web_apple.m front_web_touch), a touch no control would take goes to the page instead of the game's touch screen:
+// the gamepad lets it through. The same tests as touchesBegan
+int front_web_touch(void);
+- (BOOL)controlAt:(CGPoint)p {
+    if (_padOff || _tap || (_layout.separated && !CGRectContainsPoint(_layout.controls, p))) return NO;
+    if ([self btnAt:p] >= 0) return YES;
+    if (dist(p, self.faceCenter) / (self.faceGap + self.faceR * 1.6) <= 1) return YES;
+    if (_full && dist(p, self.dpadCenter) / (self.dpadR * K_DPAD_GRAB) < 1) return YES;
+    return [self inLeftArea:p] || (_full && [self inRightArea:p]);   // a stick is centred wherever its touch lands, so its whole third is its own
+}
+- (UIView *)hitTest:(CGPoint)p withEvent:(UIEvent *)e {
+    UIView *v = [super hitTest:p withEvent:e];
+    return v == self && front_web_touch() && ![self controlAt:p] ? nil : v;
 }
 - (void)touchesBegan:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e {
     BOOL game = NO;
     for (UITouch *t in ts) {
         if (_padOff) { game |= [self gameBegin:t]; continue; }
-        CGPoint p = [t locationInView:self]; int hit = _tap ? -1 : [self btnAt:p];
+        CGPoint p = [t locationInView:self];
+        if (_layout.separated && !CGRectContainsPoint(_layout.controls, p)) { game |= [self gameBegin:t]; continue; }   // the picture has its own band in a portrait / tabletop split
+        int hit = _tap ? -1 : [self btnAt:p];
         if (hit >= 0) { [_owner setObject:@(C_BTN | (uint64_t)hit << 8) forKey:t]; continue; }
-        if ([self inSwap:p]) { [_owner setObject:@(C_SWAP) forKey:t]; continue; }
         if (_tap) { game |= [self gameBegin:t]; continue; }
         // diamond and D-pad: the nearer one, by distance over its grab radius, if that is <= 1
         CGFloat best = 1; int kind = C_NONE, idx = 0;
@@ -389,16 +444,14 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
     [self recompute];
 }
 - (void)endTouches:(NSSet<UITouch *> *)ts tapped:(BOOL)ended {
-    BOOL swap = NO, game = NO;
+    BOOL game = NO;
     for (UITouch *t in ts) {
         uint64_t v = [_owner objectForKey:t].unsignedLongLongValue;
-        if (ended && (v & 0xff) == C_SWAP && [self inSwap:[t locationInView:self]]) swap = YES;   // layout button: counts only when released on the button
         if ((v & 0xff) == C_GAME && (v >> 8) < 16) { _game[v >> 8] = nil; game = YES; }
         [_owner removeObjectForKey:t]; [_faceOf removeObjectForKey:t]; for (int i = 0; i < 2; i++) if (t == _stick[i]) _stick[i] = nil;
     }
     if (game) [self pushGame];
     [self recompute];
-    if (swap) dm_pad_menu_show(self, self.swapCenter);   // the menu opens over the game, which keeps running: the Mac window's menus work the same way
 }
 - (void)touchesEnded:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self endTouches:ts tapped:YES]; }
 - (void)touchesCancelled:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self endTouches:ts tapped:NO]; }
@@ -459,7 +512,10 @@ static void placeLabel(CATextLayer *t, CGPoint c, CGFloat fs) {
     }
     static const struct { int b; CGFloat angle; } arms[] = {{B_UP, 0}, {B_RIGHT, M_PI_2}, {B_DOWN, M_PI}, {B_LEFT, -M_PI_2}};   // the same arm in 90° steps
     for (int i = 0; i < 4; i++) setPath(_key[arms[i].b], armPath(self.dpadCenter, self.dpadR, K_ARM_W * u, K_ARM_IN * u, arms[i].angle, 6 * u));
-    CGPoint sc = self.swapCenter; setPath(_swap, circlePath(sc, K_SWAP_R * u)); placeLabel(_swapLabel, sc, 12 * u);
+    CGPoint mc = self.menuCenter; CGFloat mr = K_MENU_R * u;   // the gear: a UIButton, so UIKit draws the in-game menu and takes its touches
+    _menu.frame = CGRectMake(mc.x - mr, mc.y - mr, 2 * mr, 2 * mr); _menu.layer.cornerRadius = mr;
+    _menu.layer.shadowPath = [UIBezierPath bezierPathWithOvalInRect:_menu.bounds].CGPath;
+    [_menu setImage:[UIImage systemImageNamed:@"gearshape.fill" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:13 * u weight:UIImageSymbolWeightSemibold]] forState:UIControlStateNormal];
     CGFloat k = K_KNOB_R * u;
     for (int i = 0; i < 2; i++) {   // both knobs are the same size; each stick's own radius says how far its knob travels
         _knob[i].bounds = CGRectMake(0, 0, 2 * k, 2 * k);
@@ -476,7 +532,6 @@ static void placeLabel(CATextLayer *t, CGPoint c, CGFloat fs) {
     [CATransaction begin]; [CATransaction setDisableActions:YES];
     for (int b = 0; b < B_N; b++) { BOOL on = (all >> b) & 1;
         _key[b].fillColor = (on ? k_on : k_idle).CGColor; _label[b].foregroundColor = (on ? k_textOn : k_text).CGColor; }
-    _swap.fillColor = (_swapHeld ? k_on : k_idle).CGColor; _swapLabel.foregroundColor = (_swapHeld ? k_textOn : k_text).CGColor;
     for (int i = 0; i < 2; i++) {   // a stick draws only its knob, under the finger, and only while that finger holds it
         if (!_stick[i]) { _knob[i].hidden = YES; continue; }
         CGPoint h = [self stickCentre:i], o = [self knobOffset:i];
@@ -555,14 +610,17 @@ static BOOL pads_slotted(GCController *gone) {
     GCController *c = note.object, *gone = [note.name isEqual:GCControllerDidDisconnectNotification] ? c : nil;
     if (c && (!c.extendedGamepad || g_merge)) LOG("controller %s: %s%s", gone ? "disconnected" : "connected", pad_name(c), c.extendedGamepad ? "" : " (no extended gamepad profile: not used)");
     BOOL any = g_merge ? pads_merged(gone) : pads_slotted(gone);
-    dispatch_async(dispatch_get_main_queue(), ^{ self->_padOff = any; self->_controls.hidden = any; [self reset]; });   // the touch gamepad hides while any controller is in use
+    dispatch_async(dispatch_get_main_queue(), ^{ self->_padOff = any; self->_controls.hidden = any; [self reset]; });   // the touch gamepad hides while any controller is in use; the gear stays, so the menu is reachable with a pad in hand
 }
 @end
 
 UIView *dm_gamepad_view(CGRect frame) { DmGamepad *v = [[DmGamepad alloc] initWithFrame:frame]; g_view = v; return v; }
-int dm_gamepad_layout(void) { DmGamepad *v = g_view; return v ? v.layoutIndex : 0; }   // a strong local: g_view is a weak reference
-int dm_gamepad_tap_available(void) { return dm_opmode() == 0; }   // the game reads the touch screen only in handheld mode, so that is the only time the menu offers Touch-only
-void dm_gamepad_set_layout(int l) { DmGamepad *v = g_view; if (v) [v applyLayoutIndex:l]; }
+void dm_gamepad_arrange(UIView *view, DmLayout layout) { [(DmGamepad *)view arrange:layout]; }
+void dm_gamepad_opmode_changed(void) { [g_view opmodeChanged]; }
+void dm_gamepad_touch_feedback(bool on) { [g_view setTouchFeedback:on]; }
+int dm_pad_layout(void) { return g_view ? [g_view padLayout] : 0; }
+bool dm_pad_layout_offered(int layout) { return layout == 0 || layout == 1 || (layout == 2 && dm_opmode() == 0); }   // Tap only where the game reads the touch screen
+void dm_pad_layout_set(int layout) { [g_view setPadLayout:layout]; }
 void dm_gamepad_active(void) { dispatch_async(dispatch_get_main_queue(), ^{ for (GCController *c in GCController.controllers) dm_motion_rearm(c); }); }   // On become active: motion_apple.h
 void dm_gamepad_reset(void) {   // On resign active: release everything (a key held while switching away and released in background gets no "release")
     dispatch_async(dispatch_get_main_queue(), ^{ [g_view reset]; });
