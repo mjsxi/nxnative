@@ -86,6 +86,13 @@
 - **Fix:** `main.m` (`romfs_document_images`) lists Documents for `romfs.img` in any letter case, `romfs.img` itself first, and takes the first that is complete and passes the `romfs.id` check; a rejected or incomplete one falls through to the next spelling, then to the folders. The identity report, the backup exclusion and the log lines use the names found. Folder names (`Documents/romfs`) are still matched exactly.
 - **Found on:** South Park: The Fractured But Whole 1.05 (`01008F2005154000`, no profile here) on an iPhone 15 Pro Max, [issue #582](https://github.com/seedds/nxnative/issues/582). The Foundation startup test runs the locator on a case-sensitive APFS disk image.
 
+### Copying game files to a new Documents folder resets the app container
+
+- **Symptom:** after a `copy to` with `--remove-existing-content true` and a destination folder that does not exist yet (a new `Documents/mods`), the app's container is a fresh skeleton: `Documents/log.txt`, the save folders and `Library/Caches` are gone, all dated to that minute, and the game starts with no saves. A second app on the same device, untouched by the command, keeps everything.
+- **Cause:** not read from `devicectl`'s own source (open). Measured on one device: the same flag pointing at a destination that already exists (`push_romfs.sh` syncing `Documents/aoc`) replaced that folder's content and left the rest of the container alone; with a destination that did not exist, the whole data container came back new. Treat the flag as container-wide unless the destination already exists.
+- **Fix:** copy without `--remove-existing-content` when the destination is new (`copy to` merges and creates intermediate folders, so a whole mod tree arrives in one call), and pull the save before any push that uses the flag. `scripts/push_romfs.sh` needs the flag to drop deleted DLC, and its destination always exists; a new folder does not.
+- **Found on:** [Fire Emblem: Three Houses](../../dm/games/010055D009F78000/README.md#files-and-shaders) on an iPhone 17 Pro Max, 2026-11-05, pushing a RomFS mod; the save was restored from a copy taken a minute before, so nothing was lost.
+
 ### Building creates a full RomFS tree before packing its image
 
 - **Symptom:** reducing the iPhone transfer to one image still creates thousands of resource files on the Mac, and build scanners require the expanded folder.

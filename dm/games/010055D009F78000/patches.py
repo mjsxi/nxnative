@@ -36,6 +36,28 @@ CUTS = {
 
 # How general each patch is and could be (dm/tools/docs_patches.py "Binding", listed in docs/agents/game-patches.md): what, its binding now, the loosest it could have (goal),
 # purpose, why; blocked or kept: why the gap stays open (cannot close yet, or left open on purpose); checked: what was checked on game files (else a judgement)
+# Player code mods (the pchtxt kind), opt-in: DM_GAME_MODS names folders (':'-separated) holding main.cuts.tsv, whose rows are appended to this build's CUTS. A mod that changes
+# instructions cannot be applied on the iPhone at run time (the host refuses code writes there, dm/host/hle_cheats.c: the app's signed code pages), so it goes in here at rewrite
+# time and the game builds vanilla without the variable. The rows read exactly like the CUTS tuples above -- offset, original bytes, new bytes, reason, tab-separated, # starts a
+# comment -- so the rewriter asserts every original byte before applying it and aborts on a build that does not match. They live beside the game files, one folder per mod with its
+# own note: <NSP folder>/mods/<mod>/main.cuts.tsv. A mod that only replaces files needs none of this: the device reads it before its game files (DM_ROMFS_OVERLAY, dm/host/hle_fs.c)
+import os
+
+BUILD_120 = '89048449ba238c8cf565518b83bf02d3'      # 1.2.0 (v327680), the only build this profile registers
+for _dir in (d for d in os.environ.get('DM_GAME_MODS', '').split(':') if d):
+    _tsv = os.path.join(_dir, 'main.cuts.tsv')
+    if not os.path.exists(_tsv):
+        raise SystemExit(f'DM_GAME_MODS: no {_tsv}: that folder is not a code mod (a mod that only replaces files needs no build: put it in DM_ROMFS_OVERLAY on the device)')
+    with open(_tsv) as _f:
+        for _ln in _f:
+            if _ln.startswith('#') or not _ln.strip():
+                continue
+            _cols = _ln.rstrip('\n').split('\t')
+            if len(_cols) < 4:
+                raise SystemExit(f'DM_GAME_MODS: {_tsv}: expected offset, original, new, reason tab-separated, got: {_ln.strip()}')
+            CUTS.setdefault(BUILD_120, []).append(
+                (int(_cols[0], 16), _cols[1], _cols[2], f"player mod {os.path.basename(_dir.rstrip('/'))}: {_cols[3]}"))
+
 BINDING = [
     {'what': 'render intervals, the forced-interval flag and the render-wait timeout', 'now': 'build', 'goal': 'game', 'purpose': 'frame rate',
      'why': "the game's own tables, flag and timeout"},
