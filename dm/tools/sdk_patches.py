@@ -11,23 +11,6 @@ CUTS = {
     (0x93e8c, 'ea030232', '0a80a052', 'VammManager occupied node area: 1 GB to 64 MB'),
     (0x93fe0, 'ea030232', '0a40a052', 'AllocateAddressRegion: align regions of 1 GB and more to 32 MB'),
   ],
-  # Pokemon Brilliant Diamond 1.3.0 (SDK 11.4.3): nninitStartup (main+0x2c1d5c) gives pool - used to StandardAllocator with virtual address memory.
-  # Its first CentralHeap::Init aborts at sdk+0x2f98e4: the 1 GB node area leaves no room for the 1 GB-aligned 3.14 GB reservation in a 4.375 GB alias region.
-  # The constructor (sdk+0x34e0b8) is the same mechanism as Engage's below: the limit and the occupied length must both shrink to 62 MB.
-  # The SDK-wide alignment rule matches this build too (sdk+0x34e2c4, checked 2026-10-29); this row keeps it out until a game shipping the build is run with it.
-  '2d369d9999e3e10e665106f840ffff9b': [
-    (0x34e0c8, '08fca752', '087ca052', 'AddressRegionManager constructor: node area limit mov w8,#0x3fe00000 → mov w8,#0x3e00000'),
-    (0x34e164, '09fca752', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region mov w9,#0x3fe00000 → mov w9,#0x3e00000'),
-  ],
-  # Fire Emblem Engage 2.0.0 (v327680) sdk: AddressRegionManager node area 0x3fe00000 (about 1 GB) → 0x3e00000 (62 MB).
-  # The constructor (sdk+0x346420) carves the node area out of the start of the alias region (a unit heap of 0x30-byte nodes, mapped only as used) before AllocateAddressRegion hands out regions.
-  # The hardware alias region is 64 GB, so the 1 GB does not matter there; the host's alias region is only 5.375 GB (iOS caps a single reservation at 6 GB), and after StandardAllocator's 3.14 GB block (1 GB aligned)
-  # Unity's low-level virtual allocator (main+0x9aa0f4 → AllocateAddressRegion) had only about 1.2 GB left; about 357 s into the prologue battle it got no region → returned 0 → null write crash at main+0x9a4664.
-  # 62 MB holds about 1.35 million nodes (a few hundred regions are live in measurements). Both movs must change together: +0x346430 sets the node area limit, +0x3464cc registers it as an occupied region.
-  '56ec24747ec9e7f19b3efb062483a19d': [
-    (0x346430, '08fca752', '087ca052', 'AddressRegionManager constructor: node area limit mov w8,#0x3fe00000 → mov w8,#0x3e00000'),
-    (0x3464cc, '09fca752', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region mov w9,#0x3fe00000 → mov w9,#0x3e00000'),
-  ],
   # Ace Attorney Investigations Collection 1.0.0.2 (v131072) sdk (SDK 17.5.3): the same node area cut as Engage's. Without it nninitStartup's StandardAllocator::Initialize(nullptr, pool − used)
   # (main+0x874b6c, virtual address memory) aborts at its first CentralHeap::Init: the 1 GB-aligned region of 3.14 GB did not fit in the 4.375 GB alias region after the node area.
   # The constructor is at sdk+0x139458 (limit = alias start + 0x3fe00000 at +0x28, a unit heap of 0x30-byte nodes, the area then registered as occupied)
@@ -77,7 +60,7 @@ CUTS = {
 # taken from that build's CUTS above and resolves to exactly the registered cuts there; on the 36 sdk builds on the game drives each rule matched once or not at all (2026-10-28).
 # Older SDKs (Fire Emblem: Three Houses, Bayonetta, Donkey Kong Country: Tropical Freeze, Xenoblade Chronicles 2, Yoshi's Crafted World) have other implementations, not reviewed.
 # Builds whose registered rows these rules reproduce exactly (20, checked on the game drive, 2026-10-29, 2026-10-30), or reproduce with the 2 MB alignment more and a game run with
-# it (3, 2026-10-30), so their rows were removed: what was found on each
+# it (5, 2026-10-30 and 2026-11-09), so their rows were removed: what was found on each
 # - 3053b229…: Sea of Stars 2.0.59001 (v786432) sdk (SDK 16.2.0, the build of Super Mario Bros. Wonder 1.0.0 / 1.0.1): the node area cut and the 2 MB alignment, measured on Sea of Stars
 #   (above). nninitStartup (main+0x8b66a0) calls StandardAllocator::Initialize(nullptr, pool − used) with virtual address memory, which aborted at sdk+0x126440 (Initialize+0xc0). The
 #   constructor is at sdk+0x134718, the placement at sdk+0x1348b0. Unity 2021.3's virtual allocator (main+0x48deb0 → main+0x12e12c0) reserves N MB + 252 KB and aligns its blocks to 256 KB
@@ -160,6 +143,13 @@ CUTS = {
 # - 5bcf525f…: OCTOPATH TRAVELER II 1.1.1 (v131072) sdk (SDK 12.3.2, Unreal Engine 4.27): the node area cut, as DRAGON QUEST VII Reimagined's, and now the 2 MB alignment (run on the
 #   game, 2026-10-30: its 2 GB region moves from alias +0.75 GB to +0.06 GB). The constructor is at sdk+0x346180 (the limit at +0x346190, the occupied length at +0x34622c), the
 #   placement's constants at sdk+0x346384 / +0x34638c / +0x346390. Unreal's engine region (dm/tools/ue_region.py) starts 62 MB into the alias region
+# - 56ec2474…: Fire Emblem Engage 2.0.0 (v327680) sdk (SDK 12.3.7, Unity 2020.3.18f1): the node area cut, and now the 2 MB alignment (run on the game with the iPhone's alias
+#   region, DM_ALIAS_SIZE=0x118000000, 2026-11-09: 300 s of the title and attract demo at 60 fps; StandardAllocator's 2.44 GB region moves from alias +0.38 GB to +0.06 GB and the gaps
+#   between live regions from 0.89 to 0.69 GB). The constructor (sdk+0x346420) carves the node area out of the start of the alias region; with the 1 GB node area and the 1 GB-aligned
+#   block, Unity's low-level virtual allocator (main+0x9aa0f4 → AllocateAddressRegion) got no region about 357 s into the prologue battle and wrote at NULL + 0x1fffe0 (main+0x9a4664)
+# - 2d369d99…: Pokémon Brilliant Diamond 1.3.0 (v393216) sdk (SDK 11.4.3, Unity 2019.4): the node area cut, and now the 2 MB alignment (run on the game with the iPhone's alias region,
+#   2026-11-09). nninitStartup (main+0x2c1d5c) gives pool − used to StandardAllocator with virtual address memory, whose first CentralHeap::Init aborted at sdk+0x2f98e4: the 1 GB node
+#   area left no room for the 1 GB-aligned 3.14 GB reservation. The constructor is at sdk+0x34e0b8, the placement's constants at sdk+0x34e2bc / +0x34e2c4 / +0x34e2c8
 node_area, alignment = 'AddressRegionManager node area 1 GB → 62 MB', 'AllocateAddressRegion: regions of 4 MB and more aligned to 2 MB, as SDK 20'
 def mov(old, value):   # the original mov / orr of a constant, as the registered reasons name it (its destination register: the word's low 5 bits)
     rd = int(old[:2], 16) & 31
@@ -193,6 +183,9 @@ MATCH_CUTS = {'sdk': [
     # SDK 22.2.0 built for the Switch 2 (Fire Emblem Fortune's Weave): the constructor at sdk+0x16ba30 with return address signing and its own frame. The host's StandardAllocator cap counts on the
     # 62 MB (alias_room): with 1 GB the capped region did not fit the alias region
     node(328, ['5f2f7a70fa5c25aeb7020f75dc785fd6ffe6c2f5c72d8fcb30e0ea9a0bb4bbc5'], 0x18, '08fca752', '087ca052', 0xa4, '09fca752', '097ca052'),
+    # SDK 19.3.3 (Mario Kart World), 20.5.15 (Yoshi and the Mysterious Book, Hyrule Warriors: Age of Imprisonment), 20.5.19 (Donkey Kong Bananza) built for the Switch 2: the constructor at sdk+0x14df00 on 20.5.15, with
+    # return address signing. Unreal's engine region takes what the alias region has room for, counting on the 62 MB (alias_room): with 1 GB nninitStartup's AllocateAddressRegion fails and it exits
+    node(300, ['224e86858a769644c9ebfe39c77e214c7ac5f853c156118dd3136eba25ed64bf'], 0x18, '08fca752', '087ca052', 0xa4, '09fca752', '097ca052'),
     # SDK 7.3.2 (DRAGON QUEST XI S), 8.2.1 (Super Smash Bros. Ultimate), 8.3.1 (Paper Mario: The Origami King), 10.4.1 (Advance Wars 1+2), 10.4.8 (Pikmin 4)
     align(352, ['006abd214d94c93386735550cee4fe7708bc1f0d1812663123cfa3b9611f1533', '42167e4d3c710e11937e45a9e420fdd0ed9a410386c17da4d1d896b847d3b0d6'], 'eb030732', 'ea030232', 'e8030a32'),
     # SDK 11.4.0 (Pokémon Legends: Arceus, Kirby and the Forgotten Land): the next rule's size classes with 8 more bytes of body; the 4 GB StandardAllocator region of Arceus's nninitStartup
@@ -210,11 +203,11 @@ BINDING = [
     {'what': 'node area 1 GB → 62 MB and regions of 4 MB and more aligned to 2 MB, as SDK 20: the SDK-wide rules', 'now': 'sdk', 'goal': 'sdk', 'purpose': 'address space',
      'checked': '20 registered builds rewritten byte-identical with the rules alone, 2026-10-29 and 2026-10-30; the 2 MB alignment on every sdk build on the drive, 2026-10-30',
      'why': 'one rule per reviewed implementation; every sdk build without CUTS gets them'},
-    {'what': 'rows the rules would add the alignment cuts to (2d369d99, 12f16103, 311deab1)', 'now': 'build', 'goal': 'sdk', 'purpose': 'address space',
+    {'what': 'rows the rules would add the alignment cuts to (12f16103, 311deab1)', 'now': 'build', 'goal': 'sdk', 'purpose': 'address space',
      'checked': "the rules resolved on each build's sdk, 2026-10-29 and 2026-10-30",
      'why': 'the rules give these builds the same node area cut and the three alignment cuts more; each row keeps the alignment out',
-     'blocked': 'the games that reach them (Pokémon Brilliant Diamond, Monster Hunter Rise, 13 Sentinels: Aegis Rim; Brain Memory Training Academy; Ace Attorney Investigations Collection) have no Mac build: run one per build with the alignment cuts'},
-    {'what': 'rows of builds not on the game drive (56ec2474, 9c73fb73, e01950c5)', 'now': 'build', 'goal': 'sdk', 'purpose': 'address space',
+     'blocked': 'the games that reach them (Brain Memory Training Academy; Ace Attorney Investigations Collection) have no Mac build: run one per build with the alignment cuts'},
+    {'what': 'rows of builds not on the game drive (9c73fb73, e01950c5)', 'now': 'build', 'goal': 'sdk', 'purpose': 'address space',
      'why': 'likely what the rules give (each names one of their implementations)',
      'blocked': 'no copy on the drive to compare'},
     {'what': 'VammManager node area and alignment, SDK 4.4.0 (9de92bad)', 'now': 'build', 'goal': 'sdk', 'purpose': 'address space',
